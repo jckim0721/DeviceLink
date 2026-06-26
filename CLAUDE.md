@@ -1,6 +1,6 @@
 # CLAUDE.md — DeviceLink
 
-의료기기 → FHIR 게이트웨이. 장치 생체신호를 TCP로 수신 → 도메인 모델 파싱 → FHIR Observation 변환 → FHIR 서버(HAPI)에 POST.
+의료기기 → FHIR 게이트웨이. 장치가 HL7 v2 ORU^R01을 MLLP로 송출 → 게이트웨이가 NHapi로 파싱 → FHIR Observation 변환 → FHIR 서버(HAPI)에 POST.
 
 ## 단일 진실원 (스펙·트래커)
 
@@ -16,12 +16,14 @@
 ```
 DeviceLink.sln
 └─ src/
-   ├─ DeviceLink.Core/       # 공유 도메인 모델(Reading)·표준 코드 매핑. 현재 비어 있음 (M1에서 채움)
-   ├─ DeviceLink.Simulator/  # 생체신호 TCP 송출 콘솔
-   └─ DeviceLink.Gateway/    # TCP 수신 → 파싱 → FHIR 변환 → POST
+   ├─ DeviceLink.Core/       # 공유 도메인. Reading(측정 레코드), MetricCatalog(metric→LOINC/UCUM).
+   │                         #   HL7/FHIR SDK 비의존 — 코드 매핑만 plain data.
+   ├─ DeviceLink.Simulator/  # 생체신호 4종 랜덤워크 → ORU^R01 생성(OruBuilder) → MLLP 송출
+   └─ DeviceLink.Gateway/    # MLLP 수신(MllpReader) → ORU 파싱(OruParser) → FHIR 매핑(ObservationMapper)
+                             #   → Patient 보장(PatientRegistry) → POST
 ```
 
-Simulator·Gateway 모두 `DeviceLink.Core`를 참조.
+Simulator·Gateway 모두 `DeviceLink.Core`를 참조. HL7(NHapi)·FHIR(Firely) 의존성은 Core 밖(앱 프로젝트)에만 둔다.
 
 ## 빌드/실행 (macOS, .NET 8 keg-only)
 
@@ -38,12 +40,12 @@ dotnet run --project src/DeviceLink.Gateway
 
 ## 스택
 
-.NET 8 / C# · Firely SDK (`Hl7.Fhir.R4`, FHIR R4) · HAPI 테스트 서버(`https://hapi.fhir.org/baseR4`).
-스트레치: NHapi(HL7 v2 ORU^R01), Open Integration Engine(MLLP).
-생체신호는 LOINC 코드 + UCUM 단위로 매핑 (정확한 코드는 loinc.org 확인).
+.NET 8 / C# · **NHapi**(HL7 v2.5.1 ORU^R01 생성/파싱 + MLLP 프레이밍) · **Firely SDK**(`Hl7.Fhir.R4`, FHIR R4) · HAPI 테스트 서버(`https://hapi.fhir.org/baseR4`).
+스트레치: Open Integration Engine(MLLP 인터페이스 엔진 채널).
+생체신호는 LOINC 코드 + UCUM 단위로 매핑 (정확한 코드는 loinc.org 확인). 혈압은 HL7에선 OBX 분리, FHIR에선 panel(85354-9)+component로 합침.
 
 ## 작업 위임 원칙
 
-- **위임 OK**: 보일러플레이트(소켓 서버, DTO, 직렬화), Firely API 사용법 탐색, 에러 핸들링 패턴, README 초안.
+- **위임 OK**: 보일러플레이트(소켓 서버, DTO, 직렬화), NHapi/Firely API 사용법 탐색, 에러 핸들링 패턴, README 초안.
 - **사람이 쥔다**: 아키텍처 결정, 프로토콜/파싱 설계, "왜 이렇게" 판단 — 면접에서 증명하는 부분이라 위임하지 않는다.
 - 태스크는 작게 던진다. v0 정신: 못생겨도 *돌아가면 통과*, 다듬기는 나중.
