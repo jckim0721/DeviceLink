@@ -7,32 +7,38 @@
 ## 아키텍처
 
 ```
-[Device Simulator] --TCP--> [Gateway] --FHIR REST--> [FHIR Server]
-   생체신호 송출            수신·파싱·변환            HAPI 테스트 서버
+[Device Simulator] --HL7 v2/MLLP--> [Gateway] --FHIR REST--> [FHIR Server]
+   ORU^R01 송출                  수신·파싱·변환          HAPI 테스트 서버
 ```
 
 | 구성요소 | 프로젝트 | 역할 |
 |---|---|---|
-| Device Simulator | `src/DeviceLink.Simulator` | 가짜 생체신호를 주기적으로 TCP 송출 (현재 심박 1종) |
-| Gateway | `src/DeviceLink.Gateway` | TCP 수신 → 도메인 모델 파싱 → FHIR Observation 매핑 → 서버 POST |
-| 공유 모델 | `src/DeviceLink.Core` | `Reading` 도메인 모델 · 와이어 포맷 · 표준 코드 매핑 (Simulator/Gateway 공용, FHIR 비의존) |
+| Device Simulator | `src/DeviceLink.Simulator` | 생체신호 4종을 HL7 v2 ORU^R01로 만들어 MLLP로 송출 |
+| Gateway | `src/DeviceLink.Gateway` | MLLP 수신 → NHapi로 ORU^R01 파싱 → FHIR Observation 매핑 → 서버 POST |
+| 공유 모델 | `src/DeviceLink.Core` | `Reading` 도메인 모델 · 표준 코드 매핑(`MetricCatalog`) (HL7/FHIR SDK 비의존) |
 
 FHIR 서버는 직접 만들지 않고 공개 테스트 서버(HAPI, `https://hapi.fhir.org/baseR4`)를 사용한다.
 
 ### 데이터 흐름
 
-장치 메시지는 **파이프 구분 한 줄 = 한 측정**, 줄바꿈(`\n`)으로 프레이밍한다:
+시뮬레이터는 실제 병상 모니터처럼 **HL7 v2.5.1 ORU^R01** 메시지를 만들어 **MLLP**(`<VT>…<FS><CR>`) 프레이밍으로 TCP 송출한다. 측정값 하나 = OBX 세그먼트 하나이며, 같은 측정 묶음은 OBR 아래 모인다:
 
 ```
-metric|timestamp(ISO8601 UTC)|deviceId|value|unit
-예) HR|2026-06-25T16:52:44Z|DEV-001|66|/min
+MSH|^~\&|DeviceLinkSim|ICU|DeviceLinkGW|HOSP|20260626034206||ORU^R01^ORU_R01|...|P|2.5.1
+PID|1||P-001||DeviceLink^Test
+OBR|1|||VITALS^Vital Signs|||20260626034206
+OBX|1|NM|8867-4^Heart rate^LN||72|/min^^UCUM|||||F|...|DEV-001
+OBX|3|NM|8480-6^Systolic blood pressure^LN||120|mm[Hg]^^UCUM|||||F|...
+OBX|4|NM|8462-4^Diastolic blood pressure^LN||80|mm[Hg]^^UCUM|||||F|...
 ```
 
-Gateway가 이를 `Reading`으로 파싱 → LOINC/UCUM 코드를 붙여 FHIR `Observation`으로 매핑 → HAPI에 POST하고 서버가 부여한 id를 회수한다:
+Gateway는 MLLP 프레임을 NHapi로 파싱 → OBX들을 묶음 단위로 모아 FHIR로 매핑한다. 스칼라(HR·SpO2·체온)는 각각 Observation, **혈압 OBX 3종(수축기/이완기/평균)은 FHIR Blood pressure panel(85354-9) 하나에 component로 합친다.** PID의 환자는 FHIR Patient로 보장해 `subject`로 참조하고, OBX-18 장치 식별자는 `Observation.device`로 옮긴다. 그 뒤 HAPI에 POST하고 부여 id를 회수한다:
 
 ```
-[수신] HR 66/min @ 2026-06-25T16:52:44Z (장치 DEV-001)
-[POST] Observation/137032271 (version 1) ← HR 66/min
+[수신] ORU^R01 환자 P-001, 측정 6건
+[환자 생성] Patient/137032796 (P-001)
+   [POST] Observation/137032797 ← 8867-4 Heart rate
+   [POST] Observation/137032812 ← 85354-9 Blood pressure panel
 ```
 
 ### 생체신호 ↔ 표준 코드 매핑 (`Core/MetricCatalog`)
@@ -42,15 +48,19 @@ Gateway가 이를 `Reading`으로 파싱 → LOINC/UCUM 코드를 붙여 FHIR `O
 | `HR` | 8867-4 | Heart rate | `/min` |
 | `TEMP` | 8310-5 | Body temperature | `Cel` |
 | `SpO2` | 59408-5 | Oxygen saturation by Pulse oximetry | `%` |
+| `NIBPs` | 8480-6 | Systolic blood pressure | `mm[Hg]` |
+| `NIBPd` | 8462-4 | Diastolic blood pressure | `mm[Hg]` |
+| `NIBPm` | 8478-0 | Mean blood pressure | `mm[Hg]` |
 
-> 혈압(NIBP)은 systolic(8480-6)/diastolic(8462-4) component 구조라 별도 매핑이 필요 — M2 예정.
+> 혈압 3종은 HL7에선 각각 OBX로 흐르고, FHIR에선 Blood pressure panel(85354-9) 하나의 component로 합쳐진다.
 
 ## 기술 스택
 
 - **.NET 8 / C#**
-- **Firely .NET SDK** (`Hl7.Fhir.R4` 6.2.0) — FHIR Observation POCO · System.Text.Json 직렬화 + `FhirClient` REST
+- **NHapi** (`nhapi` 3.2.4) — HL7 v2.5.1 ORU^R01 생성/파싱 + MLLP 프레이밍
+- **Firely .NET SDK** (`Hl7.Fhir.R4` 6.2.0) — FHIR Observation/Patient POCO · System.Text.Json 직렬화 + `FhirClient` REST
 - **FHIR 테스트 서버** — HAPI (`https://hapi.fhir.org/baseR4`)
-- (스트레치) **NHapi** — HL7 v2 ORU^R01 / **Open Integration Engine** — MLLP 채널
+- (스트레치) **Open Integration Engine** — MLLP 인터페이스 엔진 채널
 
 ## 실행
 
@@ -65,12 +75,12 @@ dotnet build
 게이트웨이가 리스너이므로 **먼저 띄우고**, 시뮬레이터(클라이언트)를 나중에 붙인다. 터미널 2개:
 
 ```bash
-# 터미널 1 — Gateway: 수신 → 파싱 → 변환 → HAPI POST
+# 터미널 1 — Gateway: MLLP 수신 → NHapi 파싱 → FHIR 변환 → HAPI POST
 dotnet run --project src/DeviceLink.Gateway
 #   인자: [bindHost] [port] [fhirBaseUrl]   기본 0.0.0.0 5000 https://hapi.fhir.org/baseR4
-#   fhirBaseUrl 에 "-" 를 주면 POST를 건너뛰고 Observation JSON만 출력(오프라인 데모)
+#   fhirBaseUrl 에 "-" 를 주면 POST를 건너뛰고 매핑 결과만 로그(오프라인 데모)
 
-# 터미널 2 — Simulator: 심박을 N초마다 TCP 송출
+# 터미널 2 — Simulator: ORU^R01(4종 생체신호)을 N초마다 MLLP로 송출
 dotnet run --project src/DeviceLink.Simulator
 #   인자: [host] [port] [intervalSeconds]   기본 127.0.0.1 5000 1.0
 ```
@@ -83,24 +93,26 @@ curl -H "Accept: application/fhir+json" https://hapi.fhir.org/baseR4/Observation
 
 ## 상태
 
-✅ **v0 완성** — 장치 → 게이트웨이 → FHIR 서버로 생체신호 1종(심박)이 종단으로 흐른다.
+✅ **v0 완성** — 장치 → 게이트웨이 → FHIR로 종단 흐름.
+✅ **M2 + HL7 v2 경로** — 실제 HL7 v2 ORU^R01(MLLP) 수신, 4종 생체신호 + 혈압 panel + Patient 참조.
 
-- [x] 장치 → 게이트웨이 → FHIR 서버로 Observation 1종 이상 흐름
-- [x] 서버에서 되조회 확인
-- [x] README에 아키텍처·실행법·배운 점
-- [x] 공개 레포 push
+- [x] 장치 → 게이트웨이 → FHIR 서버로 Observation 흐름 + 서버 되조회 확인
+- [x] HL7 v2.5.1 ORU^R01 / MLLP 송수신 (NHapi)
+- [x] 4종 생체신호(심박·SpO2·체온·혈압) + LOINC/UCUM + 혈압 panel(85354-9) component
+- [x] PID → FHIR Patient `subject` 참조, OBX-18 → `Observation.device`
+- [x] 견고화: 재접속 / 잘못된·미지원 메시지 건별 격리 / 단계별 로깅
 
-견고성: 파싱 실패 메시지와 POST 실패는 **건별로 격리**해 연결을 유지하고, 끊기면 시뮬레이터가 재접속한다.
+견고성: 파싱 실패·미지원 메시지(비-ORU)·POST 실패는 **건별로 격리**해 연결을 유지하고, 끊기면 시뮬레이터가 재접속한다.
 
 ## 배운 점
 
-- **TCP는 메시지가 아니라 바이트 스트림** — 한 번의 read가 메시지 경계와 일치하지 않는다. `\n` 프레이밍을 정하고 `StreamReader.ReadLineAsync`로 라인 버퍼링을 위임해 부분 수신/CRLF를 흡수했다.
-- **의존성 경계 설계** — 와이어 계약(`Reading`)과 표준 코드표(`MetricCatalog`)는 무거운 FHIR SDK에 묶이면 안 돼서 `Core`를 FHIR-비의존으로 두고, Firely 매핑은 Gateway에만 격리했다. 추후 HL7 v2 같은 다른 출력 포맷을 붙일 때 Core가 흔들리지 않는다.
-- **Firely 6.x API 이행** — 구 `FhirJsonSerializer`/`SerializerSettings`가 폐기되고 System.Text.Json 기반 `JsonSerializerOptions().ForFhir(...).Pretty()`로 옮겨졌다. 또 `Hl7.Fhir.Model.Task`가 `System.Threading.Tasks.Task`와 충돌해 정규명으로 우회해야 했다.
-- **FHIR 코드 표현** — LOINC 코드는 `coding`에, 사람이 읽는 표시명은 `coding.display`와 `text` 양쪽에 실어야 코드가 표시명과 함께 전달된다.
+- **장치는 OBX를 분리해 보내고 FHIR는 panel을 요구한다** — HL7 v2에서 혈압은 수축기/이완기/평균이 각각 OBX로 흐르지만, FHIR vital-signs 규약은 하나의 Blood pressure panel(85354-9)에 component로 묶도록 요구한다. 게이트웨이에서 OBR 묶음 단위로 OBX를 모아 합치는 게 인터페이스 엔진이 실제로 하는 일.
+- **TCP는 메시지가 아니라 바이트 스트림** — MLLP(`<VT>…<FS><CR>`) 경계를 내부 버퍼에 누적하며 직접 찾아야 한 read에 섞여 온 여러/부분 프레임을 정확히 잘라낼 수 있다.
+- **의존성 경계 설계** — 표준 코드표(`MetricCatalog`)와 도메인(`Reading`)을 둔 `Core`는 NHapi도 Firely도 참조하지 않는다. HL7 파싱은 Gateway, HL7 생성은 Simulator, FHIR 매핑은 Gateway로 격리.
+- **Firely 6.x API 이행** — 직렬화가 System.Text.Json 기반 `JsonSerializerOptions().ForFhir(...)`로 옮겨졌고, `Hl7.Fhir.Model.Task`가 `System.Threading.Tasks.Task`와 충돌해 정규명으로 우회했다.
 
 ## 다음 계획
 
-- **M2 — 단단하게**: 생체신호 4종 전부(SpO2·체온·혈압) + 혈압 component 매핑 + `subject`(Patient 참조) + 재접속/로깅 견고화
-- **M3 — 상호운용(스트레치)**: NHapi로 HL7 v2 ORU^R01 출력 경로, Open Integration Engine MLLP 채널로 v2 수신·변환
-- 자동화 테스트(파싱/매핑 단위 테스트), 구조적 로깅
+- **M3 — 인터페이스 엔진(스트레치)**: Open Integration Engine에 MLLP 채널 1개로 v2 수신·변환 경험
+- 처리량: 측정 set을 FHIR **transaction Bundle** 한 번으로 POST(현재는 OBX별 순차 POST)
+- 자동화 테스트(ORU 파싱 / FHIR 매핑 단위 테스트), 구조적 로깅

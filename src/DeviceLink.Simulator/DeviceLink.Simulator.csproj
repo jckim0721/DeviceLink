@@ -4,6 +4,10 @@
     <ProjectReference Include="..\DeviceLink.Core\DeviceLink.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="nhapi" Version="3.2.4" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>

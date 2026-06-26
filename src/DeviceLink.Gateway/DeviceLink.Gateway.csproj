@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <PackageReference Include="Hl7.Fhir.R4" Version="6.2.0" />
+    <PackageReference Include="nhapi" Version="3.2.4" />
   </ItemGroup>
 
   <PropertyGroup>

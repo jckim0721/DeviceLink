@@ -1,29 +1,70 @@
-using DeviceLink.Core;
 using Hl7.Fhir.Model;
 
 namespace DeviceLink.Gateway;
 
 /// <summary>
-/// 도메인 Reading 한 건 → FHIR R4 Observation 변환. 표준 코드(LOINC/UCUM)는
-/// Core.MetricCatalog에서 끌어온다. FHIR 모양에 대한 판단(상태·카테고리·effective·단위계)이
-/// 여기 모인다 — Gateway가 쥐는 변환 정책.
+/// 수신·파싱한 측정 set(ParsedOru) → FHIR R4 Observation들로 변환.
+/// 스칼라(HR·SpO2·체온)는 각각 Observation 하나. 혈압 OBX 3종(수축기/이완기/평균)은
+/// FHIR vital-signs 규약대로 Blood pressure panel(85354-9) 하나에 component로 묶는다.
+/// LOINC/단위는 메시지가 실어온 값을 그대로 쓴다(코드 출처는 송신 장치).
 /// </summary>
 public static class ObservationMapper
 {
     private const string LoincSystem = "http://loinc.org";
-    private const string UcumSystem  = "http://unitsofmeasure.org";
+    private const string UcumSystem = "http://unitsofmeasure.org";
     private const string CategorySystem = "http://terminology.hl7.org/CodeSystem/observation-category";
 
-    /// <summary>
-    /// Reading을 vital-signs Observation으로 매핑. 미등록 metric이면 NotSupportedException
-    /// (호출측이 잡아 그 건만 버리고 로깅하도록).
-    /// </summary>
-    public static Observation ToObservation(Reading r)
-    {
-        if (!MetricCatalog.TryGet(r.Metric, out var info) || info is null)
-            throw new NotSupportedException($"미등록 metric '{r.Metric}' — MetricCatalog에 없음");
+    // 혈압 component LOINC + panel 코드
+    private const string SystolicLoinc = "8480-6";
+    private const string DiastolicLoinc = "8462-4";
+    private const string MeanLoinc = "8478-0";
+    private const string BpPanelLoinc = "85354-9";
 
-        return new Observation
+    private static readonly HashSet<string> BpLoincs = new() { SystolicLoinc, DiastolicLoinc, MeanLoinc };
+
+    /// <summary>측정 set을 FHIR Observation들로. subject는 환자 참조(없으면 null).</summary>
+    public static IEnumerable<Observation> ToObservations(ParsedOru oru, ResourceReference? subject)
+    {
+        var bp = new List<ObxResult>();
+
+        foreach (var r in oru.Results)
+        {
+            if (BpLoincs.Contains(r.Loinc)) { bp.Add(r); continue; }
+            yield return Scalar(r, subject);
+        }
+
+        // 혈압: 수축기/이완기 중 하나라도 있으면 panel 하나로 묶는다.
+        if (bp.Any(r => r.Loinc is SystolicLoinc or DiastolicLoinc))
+            yield return BloodPressurePanel(bp, subject);
+    }
+
+    private static Observation Scalar(ObxResult r, ResourceReference? subject)
+    {
+        var obs = BaseObservation(r.Loinc, r.Display, r.Time, r.DeviceId, subject);
+        obs.Value = Quantity(r.Value, r.Unit);
+        return obs;
+    }
+
+    private static Observation BloodPressurePanel(IReadOnlyList<ObxResult> bp, ResourceReference? subject)
+    {
+        var first = bp[0];
+        var obs = BaseObservation(BpPanelLoinc, "Blood pressure panel", first.Time, first.DeviceId, subject);
+        foreach (var r in bp)
+        {
+            obs.Component.Add(new Observation.ComponentComponent
+            {
+                Code = Code(r.Loinc, r.Display),
+                Value = Quantity(r.Value, r.Unit),
+            });
+        }
+        return obs;
+    }
+
+    // status·category·code·effective·device·subject까지 공통으로 채운 Observation
+    private static Observation BaseObservation(
+        string loinc, string display, DateTimeOffset time, string deviceId, ResourceReference? subject)
+    {
+        var obs = new Observation
         {
             Status = ObservationStatus.Final,
             Category =
@@ -33,26 +74,26 @@ public static class ObservationMapper
                     Coding = { new Coding(CategorySystem, "vital-signs") { Display = "Vital Signs" } },
                 },
             },
-            // LOINC 표시명은 coding.display에 실어 코드와 함께 전달(표준 문해력).
-            Code = new CodeableConcept
-            {
-                Coding = { new Coding(LoincSystem, info.Loinc) { Display = info.Display } },
-                Text = info.Display,
-            },
-            // 측정 시각. Reading.Timestamp는 UTC(Simulator가 UtcNow로 찍음).
-            Effective = new FhirDateTime(r.Timestamp.ToUniversalTime()),
-            Value = new Quantity
-            {
-                Value = (decimal)r.Value,
-                Unit = r.Unit,        // 사람이 읽는 단위 문자열
-                System = UcumSystem,  // UCUM 단위계
-                Code = info.UcumUnit, // 정규 UCUM 코드(카탈로그 기준)
-            },
-            // 장치 식별은 일단 Identifier로. subject(Patient 참조)는 Day6에 붙인다.
-            Identifier =
-            {
-                new Identifier("urn:devicelink:device", r.DeviceId),
-            },
+            Code = Code(loinc, display),
+            Effective = new FhirDateTime(time.ToUniversalTime()),
+            Subject = subject,
         };
+        if (!string.IsNullOrEmpty(deviceId))
+            obs.Device = new ResourceReference { Identifier = new Identifier("urn:devicelink:device", deviceId) };
+        return obs;
     }
+
+    private static CodeableConcept Code(string loinc, string display) => new()
+    {
+        Coding = { new Coding(LoincSystem, loinc) { Display = display } },
+        Text = display,
+    };
+
+    private static Quantity Quantity(double value, string unit) => new()
+    {
+        Value = (decimal)value,
+        Unit = unit,
+        System = UcumSystem,
+        Code = unit,
+    };
 }

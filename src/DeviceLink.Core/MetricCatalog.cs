@@ -19,6 +19,11 @@ public static class MetricCatalog
             ["HR"]   = new("8867-4",  "Heart rate",                                      "/min"),
             ["TEMP"] = new("8310-5",  "Body temperature",                                "Cel"),
             ["SpO2"] = new("59408-5", "Oxygen saturation in Arterial blood by Pulse oximetry", "%"),
+            // 혈압은 HL7 v2에서 값마다 OBX로 분리돼 흐른다(수축기/이완기/평균).
+            // 수신측 게이트웨이가 이 셋을 FHIR Blood pressure panel(85354-9)의 component로 묶는다.
+            ["NIBPs"] = new("8480-6", "Systolic blood pressure",  "mm[Hg]"),
+            ["NIBPd"] = new("8462-4", "Diastolic blood pressure", "mm[Hg]"),
+            ["NIBPm"] = new("8478-0", "Mean blood pressure",      "mm[Hg]"),
         };
 
     /// <summary>알려진 metric이면 표준 코드 정보를 돌려준다. 미등록이면 false.</summary>
