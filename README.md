@@ -119,11 +119,14 @@ curl -H "Accept: application/fhir+json" https://hapi.fhir.org/baseR4/Observation
 
 ## 테스트
 
-`DeviceLink.Tests`(xUnit) — **23개 전부 통과**(빌드 경고 0, ~0.1초, 네트워크 비의존).
-ORU 왕복(생성↔파싱 값 보존)·파서 견고화(깨진/비-ORU/숫자아님 격리)·MllpReader 프레임 분리(부분/다중/선행 잡음)·ObservationMapper(스칼라 + 혈압 panel+component)·MetricCatalog 매핑을 검증한다.
+`DeviceLink.Tests`(xUnit) — **26개 전부 통과**(빌드 경고 0).
+
+- **단위 23개**(네트워크 비의존, ~0.1초): ORU 왕복(생성↔파싱 값 보존)·파서 견고화(깨진/비-ORU/숫자아님 격리)·MllpReader 프레임 분리(부분/다중/선행 잡음)·ObservationMapper(스칼라 + 혈압 panel+component)·MetricCatalog 매핑.
+- **통합 3개**(실제 HAPI POST→되조회): 스칼라/혈압 panel `CreateAsync` 후 `ReadAsync`로 값·component·subject·device 검증, PatientRegistry 환자 보장. 서버 미접속 시 자동 skip.
 
 ```bash
-dotnet test tests/DeviceLink.Tests
+dotnet test tests/DeviceLink.Tests                          # 전체(26)
+dotnet test tests/DeviceLink.Tests --filter Category!=Integration   # 단위만(오프라인)
 ```
 
 결과 상세는 [docs/테스트결과.md](docs/테스트결과.md), 개발 과정·배운 점은 [docs/개발노트.md](docs/개발노트.md).

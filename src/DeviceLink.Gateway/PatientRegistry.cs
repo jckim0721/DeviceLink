@@ -20,24 +20,17 @@ public sealed class PatientRegistry(FhirClient client)
     {
         try
         {
-            // 식별자로 검색 → 있으면 그 Patient, 없으면 생성
-            var bundle = await client.SearchAsync<Patient>(new[] { $"identifier={PatientIdSystem}|{patientId}" });
-            string? id = bundle?.Entry?.FirstOrDefault()?.Resource?.Id;
-            if (id is null)
+            var patient = new Patient
             {
-                var patient = new Patient
-                {
-                    Identifier = { new Identifier(PatientIdSystem, patientId) },
-                    Active = true,
-                };
-                var created = await client.CreateAsync(patient);
-                id = created?.Id;
-                Console.WriteLine($"[환자 생성] Patient/{id} ({patientId})");
-            }
-            else
-            {
-                Console.WriteLine($"[환자 확인] Patient/{id} ({patientId})");
-            }
+                Identifier = { new Identifier(PatientIdSystem, patientId) },
+                Active = true,
+            };
+            // 조건부 생성(If-None-Exist): 같은 식별자가 이미 있으면 그걸 돌려주고, 없을 때만 만든다.
+            // 서버가 원자적으로 처리 → "검색 후 생성" 사이의 race·중복 생성을 피한다.
+            var saved = await client.ConditionalCreateAsync(
+                patient, new SearchParams().Where($"identifier={PatientIdSystem}|{patientId}"));
+            string? id = saved?.Id;
+            Console.WriteLine($"[환자] Patient/{id} ({patientId})");
             return new ResourceReference($"Patient/{id}") { Display = $"Patient {patientId}" };
         }
         catch (Exception ex)
