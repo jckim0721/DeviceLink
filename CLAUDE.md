@@ -15,12 +15,14 @@
 
 ```
 DeviceLink.sln
-└─ src/
-   ├─ DeviceLink.Core/       # 공유 도메인. Reading(측정 레코드), MetricCatalog(metric→LOINC/UCUM).
-   │                         #   HL7/FHIR SDK 비의존 — 코드 매핑만 plain data.
-   ├─ DeviceLink.Simulator/  # 생체신호 4종 랜덤워크 → ORU^R01 생성(OruBuilder) → MLLP 송출
-   └─ DeviceLink.Gateway/    # MLLP 수신(MllpReader) → ORU 파싱(OruParser) → FHIR 매핑(ObservationMapper)
-                             #   → Patient 보장(PatientRegistry) → POST
+├─ src/
+│  ├─ DeviceLink.Core/       # 공유 도메인. Reading(측정 레코드), MetricCatalog(metric→LOINC/UCUM).
+│  │                         #   HL7/FHIR SDK 비의존 — 코드 매핑만 plain data.
+│  ├─ DeviceLink.Simulator/  # 생체신호 4종 랜덤워크 → ORU^R01 생성(OruBuilder) → MLLP 송출
+│  └─ DeviceLink.Gateway/    # MLLP 수신(MllpReader) → ORU 파싱(OruParser) → FHIR 매핑(ObservationMapper)
+│                            #   → Patient 보장(PatientRegistry) → POST
+└─ tests/
+   └─ DeviceLink.Tests/      # xUnit. 단위(파싱·매핑·MLLP·코드표) + 통합(실제 HAPI POST, Category=Integration)
 ```
 
 Simulator·Gateway 모두 `DeviceLink.Core`를 참조. HL7(NHapi)·FHIR(Firely) 의존성은 Core 밖(앱 프로젝트)에만 둔다.
@@ -34,8 +36,11 @@ export DOTNET_ROOT="/opt/homebrew/opt/dotnet@8/libexec"
 export PATH="/opt/homebrew/opt/dotnet@8/bin:$PATH"
 
 dotnet build
-dotnet run --project src/DeviceLink.Simulator
-dotnet run --project src/DeviceLink.Gateway
+dotnet run --project src/DeviceLink.Gateway     # 먼저(MLLP 리스너)
+dotnet run --project src/DeviceLink.Simulator   # 나중(ORU^R01 송출)
+
+dotnet test                                     # 전체(단위+통합)
+dotnet test --filter Category!=Integration      # 단위만(오프라인)
 ```
 
 ## 스택
