@@ -113,6 +113,8 @@ curl -H "Accept: application/fhir+json" https://hapi.fhir.org/baseR4/Observation
 
 ## 다음 계획
 
-- **M3 — 인터페이스 엔진(스트레치)**: Open Integration Engine에 MLLP 채널 1개로 v2 수신·변환 경험
-- 처리량: 측정 set을 FHIR **transaction Bundle** 한 번으로 POST(현재는 OBX별 순차 POST)
+- **▶ 다음 업데이트 — 인터페이스 엔진(OIE)**: 지금은 게이트웨이를 손코딩했지만 실무는 Mirth/OIE 같은 엔진으로 한다. **Open Integration Engine에 MLLP 채널 1개**(MLLP 리스너 → 변환 → 목적지)를 구성해 "엔진도 만져봤다"를 추가한다. *(직접 짠 게이트웨이 = 원리 이해 / 엔진 채널 = 실무 도구 — 둘 다 보여주는 게 목표)*
+- 처리량: 측정 set을 FHIR **transaction Bundle** 한 번으로 POST(현재는 OBX별 순차 POST가 서버 왕복 병목)
 - 자동화 테스트(ORU 파싱 / FHIR 매핑 단위 테스트), 구조적 로깅
+
+> 개발 과정·배운 점 상세는 [docs/개발노트.md](docs/개발노트.md).
